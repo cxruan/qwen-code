@@ -13,6 +13,7 @@ import {
 import { useActions } from '@qwen-code/webui/daemon-react-sdk';
 import { useDelayedGlobalKeyDown } from '../../hooks/useDelayedGlobalKeyDown';
 import { useI18n } from '../../i18n';
+import { useTranscriptRenderMode } from '../../transcriptRenderMode';
 import { formatRuntime } from '../../utils/formatRuntime';
 import { createSentinelSerializer } from '../../utils/sentinelMessage';
 import {
@@ -49,6 +50,13 @@ function parseTasksStatusMessage(
 }
 
 export { serializeTasksStatusMessage, parseTasksStatusMessage };
+
+interface TasksStatusMessageProps {
+  message: SerializedTasksMessage;
+  embedded?: boolean;
+  manageActiveEvent?: boolean;
+  onClose?: () => void;
+}
 
 type TasksPanelStep = 'list' | 'detail';
 
@@ -234,17 +242,74 @@ function formatActivityLabel(
   return sanitizeControlChars(label);
 }
 
-export function TasksStatusMessage({
+function ReadonlyTasksStatusMessage({
+  message,
+  embedded = false,
+}: Pick<TasksStatusMessageProps, 'message' | 'embedded'>) {
+  const { t } = useI18n();
+  const tasks = arrangeTasks(message.snapshot.tasks);
+  const blockingIds = computeUserBlockingIds(tasks);
+
+  return (
+    <div
+      className={
+        embedded ? `${styles.panel} ${styles.embeddedPanel}` : styles.panel
+      }
+    >
+      {!embedded && (
+        <div className={styles.header}>
+          <div className={styles.title}>{t('tasks.title')}</div>
+        </div>
+      )}
+      {tasks.length === 0 ? (
+        <div className={styles.secondary}>{t('tasks.empty')}</div>
+      ) : (
+        <div className={styles.list}>
+          {!embedded && (
+            <div className={styles.sectionTitle}>
+              {t('tasks.title')}{' '}
+              <span className={styles.secondary}>({tasks.length})</span>
+            </div>
+          )}
+          {tasks.map((task) => (
+            <div key={task.id} className={styles.task}>
+              <div className={styles.row}>
+                <span className={styles.nameCell}>
+                  {rowLabel(task, blockingIds.has(task.id))}
+                </span>
+                <span
+                  className={`${styles.status} ${statusClassName(task.status)}`}
+                >
+                  {statusLabel(task.status, t)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function TasksStatusMessage(props: TasksStatusMessageProps) {
+  const renderMode = useTranscriptRenderMode();
+  if (renderMode === 'readonly') {
+    return (
+      <ReadonlyTasksStatusMessage
+        message={props.message}
+        embedded={props.embedded}
+      />
+    );
+  }
+  return <InteractiveTasksStatusMessage {...props} />;
+}
+
+function InteractiveTasksStatusMessage({
   message,
   embedded = false,
   manageActiveEvent = true,
   onClose,
-}: {
-  message: SerializedTasksMessage;
-  embedded?: boolean;
-  manageActiveEvent?: boolean;
-  onClose?: () => void;
-}) {
+}: TasksStatusMessageProps) {
   const { t } = useI18n();
   const actions = useActions();
   const [tasks, setTasks] = useState(() =>

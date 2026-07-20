@@ -551,6 +551,27 @@ describe('SessionTranscriptReader', () => {
     expect(page.hasMore).toBe(true);
   });
 
+  it('excludes conflicting-parent fragments from paginated records', async () => {
+    await writeRecords([
+      record('u1', null, 'root'),
+      record('u-other', null, 'other root'),
+      record('a1', 'u1', 'first'),
+      record('a1', 'u-other', 'conflicting'),
+      record('a1', 'u1', ' second'),
+      record('u2', 'a1', 'leaf'),
+    ]);
+
+    const page = await new SessionTranscriptReader(workspaceDir).readPage(
+      sessionId,
+      { limit: 10 },
+    );
+
+    expect(page.records.map((item) => item.uuid)).toEqual(['u1', 'a1', 'u2']);
+    expect(
+      page.records.find((item) => item.uuid === 'a1')?.message?.parts,
+    ).toEqual([{ text: 'first' }, { text: ' second' }]);
+  });
+
   it('marks missing parentUuid gaps without paging phantom uuids', async () => {
     await writeRecords([
       record('u2', 'missing-a1', 'tail'),

@@ -58,7 +58,8 @@ describe('createTranscriptReplayMachine', () => {
   });
 
   it('uses stable synthetic ids and finalizes dangling calls once', () => {
-    const machine = createTranscriptReplayMachine();
+    const onDiagnostic = vi.fn();
+    const machine = createTranscriptReplayMachine({ onDiagnostic });
     const projected = updates(
       machine,
       record('assistant-1', 'assistant', {
@@ -88,6 +89,13 @@ describe('createTranscriptReplayMachine', () => {
         },
       ],
     });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'missing_tool_result',
+        affectsCompleteness: true,
+        recordId: 'assistant-1',
+      }),
+    );
     expect([...machine.finalize()]).toEqual([]);
   });
 
@@ -128,6 +136,160 @@ describe('createTranscriptReplayMachine', () => {
     });
     expect(machine.snapshot().pendingToolCalls).toEqual([]);
   });
+
+  it('infers a legacy tool failure from function response errors', () => {
+    const machine = createTranscriptReplayMachine();
+    updates(
+      machine,
+      record('assistant-1', 'assistant', {
+        message: {
+          role: 'model',
+          parts: [
+            { functionCall: { name: 'read_file', args: {}, id: 'call-1' } },
+          ],
+        },
+      }),
+    );
+
+    const result = updates(
+      machine,
+      record('result-1', 'tool_result', {
+        message: {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                id: 'call-1',
+                name: 'read_file',
+                response: { error: 'ENOENT' },
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result[0]).toMatchObject({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-1',
+      status: 'failed',
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'ENOENT' },
+        },
+      ],
+    });
+  });
+
+  it('infers a legacy tool failure from success false', () => {
+    const machine = createTranscriptReplayMachine();
+    const result = updates(
+      machine,
+      record('result-1', 'tool_result', {
+        message: {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                id: 'call-1',
+                name: 'read_file',
+                response: { success: false, output: 'declined' },
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result[0]).toMatchObject({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-1',
+      status: 'failed',
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'declined' },
+        },
+      ],
+    });
+  });
+
+  it('ignores errors from unrelated function responses', () => {
+    const machine = createTranscriptReplayMachine();
+    const result = updates(
+      machine,
+      record('result-1', 'tool_result', {
+        message: {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'write_file',
+                response: { error: 'denied' },
+              },
+            },
+            {
+              functionResponse: {
+                id: 'call-1',
+                name: 'read_file',
+                response: { output: 'contents' },
+              },
+            },
+          ],
+        },
+        toolCallResult: { callId: 'call-1' },
+      }),
+    );
+
+    expect(result[0]).toMatchObject({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-1',
+      status: 'completed',
+    });
+  });
+
+  it.each([
+    {
+      explicitStatus: 'success',
+      response: { error: 'stale error' },
+      expectedStatus: 'completed',
+    },
+    {
+      explicitStatus: 'error',
+      response: { output: 'stale success' },
+      expectedStatus: 'failed',
+    },
+  ])(
+    'prefers explicit $explicitStatus status over nested response fields',
+    ({ explicitStatus, response, expectedStatus }) => {
+      const machine = createTranscriptReplayMachine();
+      const result = updates(
+        machine,
+        record('result-1', 'tool_result', {
+          message: {
+            role: 'user',
+            parts: [
+              {
+                functionResponse: {
+                  id: 'call-1',
+                  name: 'read_file',
+                  response,
+                },
+              },
+            ],
+          },
+          toolCallResult: { callId: 'call-1', status: explicitStatus },
+        }),
+      );
+
+      expect(result[0]).toMatchObject({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call-1',
+        status: expectedStatus,
+      });
+    },
+  );
 
   it('reports ambiguous same-name result correlation', () => {
     const onDiagnostic = vi.fn();

@@ -53,6 +53,56 @@ describe('prepareTranscriptRecords', () => {
     expect(prepared.records[1]?.timestamp).toBe('2026-07-14T00:00:01.000Z');
   });
 
+  it('excludes conflicting-parent fragments from aggregation', () => {
+    const prepared = prepareTranscriptRecords([
+      record('root', null),
+      record('other', null),
+      record('active', 'root', {
+        type: 'assistant',
+        message: { role: 'model', parts: [{ text: 'first' }] },
+      }),
+      record('active', 'other', {
+        type: 'assistant',
+        timestamp: '2026-07-14T00:00:03.000Z',
+        message: { role: 'model', parts: [{ text: 'conflicting' }] },
+        usageMetadata: { promptTokenCount: 99 },
+        toolCallResult: { callId: 'conflicting' },
+        model: 'conflicting-model',
+      }),
+      record('active', 'root', {
+        type: 'assistant',
+        timestamp: '2026-07-14T00:00:02.000Z',
+        message: { role: 'model', parts: [{ text: 'second' }] },
+        usageMetadata: { promptTokenCount: 2 },
+        toolCallResult: { callId: 'canonical' },
+        model: 'canonical-model',
+      }),
+    ]);
+
+    expect(prepared.records.map((item) => item.uuid)).toEqual([
+      'root',
+      'active',
+    ]);
+    expect(prepared.records[1]).toMatchObject({
+      parentUuid: 'root',
+      timestamp: '2026-07-14T00:00:02.000Z',
+      message: {
+        parts: [{ text: 'first' }, { text: 'second' }],
+      },
+      usageMetadata: { promptTokenCount: 2 },
+      toolCallResult: { callId: 'canonical' },
+      model: 'canonical-model',
+    });
+    expect(prepared.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'conflicting_parent_uuid',
+        affectsCompleteness: true,
+        recordId: 'active',
+        path: 'parentUuid',
+      }),
+    );
+  });
+
   it('ignores a trailing artifact when selecting the default leaf', () => {
     const prepared = prepareTranscriptRecords([
       record('root', null),

@@ -451,6 +451,7 @@ export function prepareTranscriptRecords(
             },
           ),
         );
+        continue;
       }
       fragments.push(record);
     } else {

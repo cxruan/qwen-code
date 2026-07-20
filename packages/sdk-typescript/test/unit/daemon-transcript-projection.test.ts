@@ -158,6 +158,57 @@ describe('projectChatRecordsToDaemonTranscript', () => {
     });
   });
 
+  it('projects nested legacy tool errors as complete failed results', () => {
+    const projection = projectChatRecordsToDaemonTranscript([
+      record('tool-start', null, {
+        type: 'assistant',
+        message: {
+          role: 'model',
+          parts: [
+            {
+              functionCall: {
+                id: 'read-1',
+                name: 'read_file',
+                args: { path: '/missing' },
+              },
+            },
+          ],
+        },
+      }),
+      record('tool-result', 'tool-start', {
+        type: 'tool_result',
+        message: {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                id: 'read-1',
+                name: 'read_file',
+                response: { error: 'ENOENT' },
+              },
+            },
+          ],
+        },
+        toolCallResult: { callId: 'read-1' },
+      }),
+    ]);
+
+    expect(
+      projection.blocks.find((block) => block.kind === 'tool'),
+    ).toMatchObject({
+      kind: 'tool',
+      status: 'failed',
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'ENOENT' },
+        },
+      ],
+    });
+    expect(projection.complete).toBe(true);
+    expect(projection.diagnostics).toEqual([]);
+  });
+
   it('keeps Vision Bridge disclosure in rendered tool content', () => {
     const projection = projectChatRecordsToDaemonTranscript([
       record('tool-start', null, {
@@ -277,7 +328,7 @@ describe('projectChatRecordsToDaemonTranscript', () => {
     expect(projection.complete).toBe(true);
   });
 
-  it('finalizes dangling tools as failed', () => {
+  it('finalizes dangling tools as failed and marks the projection incomplete', () => {
     const projection = projectChatRecordsToDaemonTranscript([
       record('tool-start', null, {
         type: 'assistant',
@@ -293,6 +344,14 @@ describe('projectChatRecordsToDaemonTranscript', () => {
       status: 'failed',
       toolCallId: 'qwen-replay-tool:tool-start:0',
     });
+    expect(projection.complete).toBe(false);
+    expect(projection.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'missing_tool_result',
+        affectsCompleteness: true,
+        recordId: 'tool-start',
+      }),
+    );
   });
 
   it('preserves assistant usage when the record ends with a tool call', () => {

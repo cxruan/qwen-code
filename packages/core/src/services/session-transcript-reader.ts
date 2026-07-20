@@ -820,6 +820,13 @@ async function buildIndex(params: {
         };
         fragmentIndex++;
         if (existing) {
+          if (existing.parentUuid !== record.parentUuid) {
+            debugLogger.warn(
+              `index skipped conflicting parentUuid session=${sessionId} ` +
+                `uuid=${record.uuid} offset=${offset}`,
+            );
+            continue;
+          }
           existing.segments.push(segment);
         } else {
           byUuid.set(record.uuid, {

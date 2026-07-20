@@ -425,6 +425,11 @@ class DefaultTranscriptReplayMachine implements TranscriptReplayMachine {
     let ordinal = 0;
     for (const pending of [...this.pendingToolCalls.values()]) {
       this.pendingToolCalls.delete(pending.callId);
+      this.report(
+        'missing_tool_result',
+        'A transcript tool call has no persisted result.',
+        pending.sourceRecordId,
+      );
       yield {
         sourceRecordId: pending.sourceRecordId,
         ...(pending.sourceTimestamp
@@ -663,14 +668,18 @@ class DefaultTranscriptReplayMachine implements TranscriptReplayMachine {
       return;
     }
 
+    const hasExplicitOutcome =
+      result?.['status'] !== undefined || result?.['error'] !== undefined;
+
     yield emit(
       createTranscriptToolCallResultUpdate({
         toolName,
         callId,
-        success:
-          result?.['status'] === undefined
+        success: hasExplicitOutcome
+          ? result?.['status'] === undefined
             ? !result?.['error']
-            : result['status'] === 'success' && !result['error'],
+            : result['status'] === 'success' && !result['error']
+          : !hasFailedFunctionResponse(record, explicitCallId, toolName),
         errorMessage: extractErrorMessage(result?.['error']),
         message: record.message?.parts,
         resultDisplay,
@@ -1143,6 +1152,49 @@ function extractToolName(record: TranscriptRecordInput): string {
     if (typeof name === 'string') return name;
   }
   return '';
+}
+
+function hasFailedFunctionResponse(
+  record: TranscriptRecordInput,
+  callId: string | undefined,
+  toolName: string,
+): boolean {
+  if (callId) {
+    for (const part of record.message?.parts ?? []) {
+      if (!isObjectRecord(part) || !isObjectRecord(part['functionResponse'])) {
+        continue;
+      }
+      const functionResponse = part['functionResponse'];
+      if (functionResponse['id'] !== callId) continue;
+      const failed = functionResponseFailed(functionResponse);
+      if (failed !== undefined) return failed;
+    }
+  }
+  for (const part of record.message?.parts ?? []) {
+    if (!isObjectRecord(part) || !isObjectRecord(part['functionResponse'])) {
+      continue;
+    }
+    const functionResponse = part['functionResponse'];
+    const responseName = functionResponse['name'];
+    if (
+      toolName &&
+      typeof responseName === 'string' &&
+      responseName !== toolName
+    ) {
+      continue;
+    }
+    const failed = functionResponseFailed(functionResponse);
+    if (failed !== undefined) return failed;
+  }
+  return false;
+}
+
+function functionResponseFailed(
+  functionResponse: Readonly<Record<string, unknown>>,
+): boolean | undefined {
+  const response = functionResponse['response'];
+  if (!isObjectRecord(response)) return undefined;
+  return response['error'] !== undefined || response['success'] === false;
 }
 
 function extractToolResultCallId(

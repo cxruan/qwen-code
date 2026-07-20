@@ -9,6 +9,7 @@ import type {
 import { useMcp } from '@qwen-code/webui/daemon-react-sdk';
 import { useDelayedGlobalKeyDown } from '../../hooks/useDelayedGlobalKeyDown';
 import { useI18n } from '../../i18n';
+import { useTranscriptRenderMode } from '../../transcriptRenderMode';
 import { extractErrorDetail } from '../../utils/errorDetail';
 import { createSentinelSerializer } from '../../utils/sentinelMessage';
 import styles from './McpStatusMessage.module.css';
@@ -271,11 +272,63 @@ function schemaSummary(
   );
 }
 
-export function McpStatusMessage({
-  message,
-}: {
+interface McpStatusMessageProps {
   message: SerializedMcpStatusMessage;
-}) {
+}
+
+function ReadonlyMcpStatusMessage({ message }: McpStatusMessageProps) {
+  const { t } = useI18n();
+  const servers = message.status.servers ?? [];
+
+  return (
+    <div className={styles.panel}>
+      <div className={styles.header}>
+        <div className={styles.title}>{t('mcp.title')}</div>
+        <div className={styles.secondary}>
+          {t('mcp.servers', { count: servers.length })}
+        </div>
+      </div>
+      {servers.length === 0 ? (
+        <div className={styles.secondary}>{t('mcp.empty')}</div>
+      ) : (
+        <div className={styles.list}>
+          {servers.map((server) => {
+            const display = statusDisplay(server, t);
+            const toolCount = message.toolsByServer[server.name]?.tools.length;
+            return (
+              <div key={server.name} className={styles.row}>
+                <span className={styles.nameCell}>{server.name}</span>
+                <span className={styles.separator}>·</span>
+                <span className={display.className}>
+                  {display.icon} {display.text}
+                </span>
+                {toolCount !== undefined && (
+                  <span className={styles.secondary}>
+                    {' · '}
+                    {t(toolCount === 1 ? 'mcp.toolCount' : 'mcp.toolsCount', {
+                      count: toolCount,
+                    })}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function McpStatusMessage(props: McpStatusMessageProps) {
+  const renderMode = useTranscriptRenderMode();
+  return renderMode === 'readonly' ? (
+    <ReadonlyMcpStatusMessage {...props} />
+  ) : (
+    <InteractiveMcpStatusMessage {...props} />
+  );
+}
+
+function InteractiveMcpStatusMessage({ message }: McpStatusMessageProps) {
   const { t } = useI18n();
   const mcp = useMcp({ autoLoad: false });
   const [localStatus, setLocalStatus] = useState(message.status);

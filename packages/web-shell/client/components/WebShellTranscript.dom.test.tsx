@@ -2,8 +2,17 @@
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DaemonTranscriptBlock } from '@qwen-code/sdk/daemon';
+import type {
+  DaemonTranscriptBlock,
+  DaemonTransport,
+} from '@qwen-code/sdk/daemon';
+import {
+  DaemonSessionProvider,
+  DaemonWorkspaceProvider,
+} from '@qwen-code/webui/daemon-react-sdk';
 import { WebShellTranscript } from './WebShellTranscript';
+import { serializeMcpStatusMessage } from './messages/McpStatusMessage';
+import { serializeTasksStatusMessage } from './messages/TasksStatusMessage';
 
 const mounted: Array<{ root: Root; container: HTMLElement }> = [];
 
@@ -20,6 +29,79 @@ function block(
     createdAt: timestamp,
     updatedAt: timestamp,
   } as DaemonTranscriptBlock;
+}
+
+function tasksStatusBlock(label: string): DaemonTranscriptBlock {
+  return block({
+    id: 'tasks',
+    kind: 'status',
+    text: serializeTasksStatusMessage({
+      snapshot: {
+        v: 1,
+        sessionId: 'session-1',
+        now: 2_000,
+        tasks: [
+          {
+            kind: 'agent',
+            id: 'agent-1',
+            label,
+            description: 'Inspect the saved session',
+            status: 'running',
+            startTime: 1_000,
+            runtimeMs: 1_000,
+            isBackgrounded: true,
+          },
+        ],
+      },
+    }),
+  });
+}
+
+function mcpStatusBlock(
+  name: string,
+  mcpStatus: 'connected' | 'disconnected',
+  toolNames: string[],
+): DaemonTranscriptBlock {
+  return block({
+    id: 'mcp',
+    kind: 'status',
+    text: serializeMcpStatusMessage({
+      status: {
+        v: 1,
+        workspaceCwd: '/workspace',
+        initialized: true,
+        discoveryState: 'completed',
+        servers: [
+          {
+            kind: 'mcp_server',
+            status: mcpStatus === 'connected' ? 'ok' : 'error',
+            name,
+            mcpStatus,
+            transport: 'stdio',
+            disabled: false,
+            configOrigin: 'workspace_settings',
+          },
+        ],
+      },
+      toolsByServer: {
+        [name]: {
+          v: 1,
+          workspaceCwd: '/workspace',
+          serverName: name,
+          initialized: true,
+          acpChannelLive: true,
+          tools: toolNames.map((toolName) => ({
+            name: toolName,
+            description: `Use ${toolName}`,
+            isValid: true,
+          })),
+        },
+      },
+      showDescriptions: true,
+      showSchema: false,
+      showTips: true,
+    }),
+  });
 }
 
 function render(node: ReactNode): {
@@ -53,6 +135,118 @@ afterEach(() => {
 });
 
 describe('WebShellTranscript DOM integration', () => {
+  it('renders a serialized tasks snapshot without daemon providers', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = render(
+      <WebShellTranscript
+        blocks={[tasksStatusBlock('Readonly investigation')]}
+        language="en"
+      />,
+    );
+
+    expect(container.textContent).toContain('Readonly investigation');
+    expect(container.textContent).not.toContain(
+      'This message could not be displayed.',
+    );
+  });
+
+  it('keeps a readonly tasks snapshot inert under a session provider', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const { container } = render(
+      <DaemonSessionProvider baseUrl="http://daemon.test" autoConnect={false}>
+        <WebShellTranscript
+          blocks={[tasksStatusBlock('Inert investigation')]}
+          language="en"
+        />
+      </DaemonSessionProvider>,
+    );
+
+    expect(container.textContent).toContain('Inert investigation');
+    expect(container.textContent).not.toContain('x stop');
+    expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 3_000)).toBe(
+      false,
+    );
+  });
+
+  it('renders a serialized MCP snapshot without daemon providers', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = render(
+      <WebShellTranscript
+        blocks={[
+          mcpStatusBlock('readonly-filesystem', 'connected', ['read_file']),
+        ]}
+        language="en"
+      />,
+    );
+
+    expect(container.textContent).toContain('readonly-filesystem');
+    expect(container.textContent).not.toContain(
+      'This message could not be displayed.',
+    );
+  });
+
+  it('keeps a readonly MCP snapshot inert under a workspace provider', async () => {
+    const transportFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ features: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const transport: DaemonTransport = {
+      type: 'rest',
+      supportsReplay: true,
+      connected: true,
+      fetch: transportFetch,
+      async *subscribeEvents() {
+        yield* [];
+      },
+      dispose: vi.fn(),
+    };
+    const { container } = render(
+      <DaemonWorkspaceProvider
+        baseUrl="http://daemon.test"
+        transport={transport}
+      >
+        <WebShellTranscript
+          blocks={[mcpStatusBlock('inert-filesystem', 'disconnected', [])]}
+          language="en"
+        />
+      </DaemonWorkspaceProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(transportFetch).toHaveBeenCalledTimes(1);
+    transportFetch.mockClear();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('inert-filesystem');
+    expect(container.textContent).not.toContain('Reconnect');
+    expect(container.textContent).not.toContain('Authenticate');
+    expect(container.textContent).not.toContain('Disable');
+    expect(transportFetch).not.toHaveBeenCalled();
+  });
+
   it('renders representative transcript blocks without daemon providers', () => {
     const blocks: DaemonTranscriptBlock[] = [
       block({ id: 'u1', kind: 'user', text: 'Inspect the project' }, 1),
